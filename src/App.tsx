@@ -42,7 +42,7 @@ enum AppState {
 // --- 3. SERVICES (Merged from ./services) ---
 const DEFAULT_AGENTS = [
   { id: 'shop-admin', name: 'Shop Manager', role: 'Operations', icon: 'Briefcase', systemPrompt: "You are the Shop Manager. You know shop minimums ($100), deposit policies (non-refundable), and consent forms." },
-  { id: 'gmail-assistant', name: 'Inbox Zero', role: 'Email Asst', icon: 'Mail', systemPrompt: "You are an Executive Assistant. Categorize incoming emails (Booking, Spam, Question) and draft polite replies." },
+  { id: 'gmail-assistant', name: 'Inbox Zero', role: 'Email Asst', icon: 'Mail', systemPrompt: "You are an Executive Assistant. When I paste an email below, categorize it (Booking, Spam, Question) and draft a polite, professional reply based on standard tattoo shop etiquette." },
   { id: 'social-hype', name: 'Hype Man', role: 'Social Media', icon: 'Sparkles', systemPrompt: "You are a Social Media expert for Tattoo Artists. Create captions, reel ideas, and hashtag sets." },
   { id: 'seo-wizard', name: 'SEO Wizard', role: 'Marketing', icon: 'PenTool', systemPrompt: "You are an SEO Specialist. Write blog posts and Google My Business replies to help us rank locally." },
   { id: 'lead-hunter', name: 'The Scout', role: 'Leads', icon: 'Search', systemPrompt: "You are a Business Scout. Find conventions, partnerships, and client outreach opportunities." }
@@ -77,6 +77,7 @@ const subscribeToMessages = (shopId, agentId, callback) => {
   const q = query(collection(db, 'shops', shopId, 'messages'), orderBy('timestamp', 'asc'));
   return onSnapshot(q, (snapshot) => {
     const allMsgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    // Filter client-side to keep it simple
     callback(allMsgs.filter(m => m.agentId === agentId));
   });
 };
@@ -91,24 +92,18 @@ const updateAgentPrompt = async (shopId, agents) => {
   await setDoc(doc(db, 'shops', shopId), { agents }, { merge: true });
 };
 
-// Modified to accept googleToken
-const generateAgentResponse = async (systemPrompt, history, userMsg, googleToken) => {
+const generateAgentResponse = async (systemPrompt, history, userMsg) => {
+  // Use Hardcoded Key OR Local Storage
   const apiKey = GEMINI_API_KEY || localStorage.getItem('nexus_gemini_key');
   
-  if (!apiKey) return "Please set your Gemini API Key in System Config.";
-  
-  // Construct the prompt with context about the Google connection
-  let finalPrompt = `${systemPrompt}\n\nUser: ${userMsg}`;
-  if (googleToken) {
-    finalPrompt += `\n\n[SYSTEM NOTE: The user has connected their Google Account. If they ask to search emails, you can use the 'google_search' tool or explain that you have access token: ${googleToken.substring(0,10)}...]`;
-  }
+  if (!apiKey) return "Please set your Gemini API Key in System Config (or in the code).";
   
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: finalPrompt }] }]
+        contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n\nUser: ${userMsg}` }] }]
       })
     });
     const data = await res.json();
@@ -145,28 +140,14 @@ const LoginScreen = ({ onLogin }) => {
   );
 };
 
-const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt, onConnectGoogle, googleConnected }) => {
+const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
   if (!isOpen) return null;
   const [apiKey, setApiKey] = useState(localStorage.getItem('nexus_gemini_key') || GEMINI_API_KEY);
-  const [clientId, setClientId] = useState(localStorage.getItem('nexus_google_client_id') || '');
   const [editingAgent, setEditingAgent] = useState(null);
 
   const saveKey = () => {
     localStorage.setItem('nexus_gemini_key', apiKey);
-    localStorage.setItem('nexus_google_client_id', clientId);
-    alert('Keys Saved');
-  };
-
-  const handleGoogleAuth = () => {
-    // Simple simulation of where the OAuth flow would go
-    if (!clientId) {
-      alert("Please enter a Google Client ID first.");
-      return;
-    }
-    // In a real app, this would trigger window.open with the Google OAuth URL
-    // For this demo, we simulate a connection or ask for a token
-    const token = prompt("Developer Mode: Paste Google Access Token (or configured Client ID flow)");
-    if (token) onConnectGoogle(token);
+    alert('API Key Saved');
   };
 
   return (
@@ -177,42 +158,17 @@ const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt, onConnect
           <button onClick={onClose}><LucideIcons.X className="text-slate-400" /></button>
         </div>
 
-        <div className="mb-8 space-y-4">
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Gemini API Key</label>
+        <div className="mb-8">
+          <label className="text-xs font-bold text-slate-500 uppercase">Gemini API Key</label>
+          <div className="flex gap-2 mt-2">
             <input 
               type="password" 
               value={apiKey} 
               onChange={e => setApiKey(e.target.value)} 
-              className="w-full bg-black border border-slate-700 rounded p-2 text-white mt-1" 
+              placeholder={GEMINI_API_KEY ? "Key Hardcoded in Code" : "Paste Key Here"}
+              className="flex-1 bg-black border border-slate-700 rounded p-2 text-white" 
             />
-          </div>
-          
-          <div>
-            <label className="text-xs font-bold text-slate-500 uppercase">Google Client ID (For Gmail)</label>
-            <div className="flex gap-2 mt-1">
-               <input 
-                type="text" 
-                value={clientId} 
-                onChange={e => setClientId(e.target.value)} 
-                placeholder="apps.googleusercontent.com"
-                className="flex-1 bg-black border border-slate-700 rounded p-2 text-white" 
-              />
-              <button onClick={saveKey} className="bg-amber-600 text-white px-4 rounded font-bold">Save</button>
-            </div>
-          </div>
-
-          <div className="p-4 bg-slate-950 rounded border border-slate-800 flex items-center justify-between">
-            <div>
-              <div className="font-bold text-white">Gmail Connection</div>
-              <div className="text-xs text-slate-500">{googleConnected ? 'Active' : 'Disconnected'}</div>
-            </div>
-            <button 
-              onClick={handleGoogleAuth}
-              className={`px-4 py-2 rounded font-bold text-sm ${googleConnected ? 'bg-green-600 text-white' : 'bg-white text-black'}`}
-            >
-              {googleConnected ? 'Connected' : 'Connect Google'}
-            </button>
+            <button onClick={saveKey} className="bg-amber-600 text-white px-4 rounded font-bold">Save</button>
           </div>
         </div>
 
@@ -260,7 +216,6 @@ const App = () => {
   const [agents, setAgents] = useState([]);
   const [activeAgentId, setActiveAgentId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [googleAccessToken, setGoogleAccessToken] = useState(null);
   
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -312,11 +267,6 @@ const App = () => {
     await updateAgentPrompt(shopId, updatedAgents);
   };
 
-  const handleConnectGoogle = (token) => {
-    setGoogleAccessToken(token);
-    alert("Google Connected! (Session only)");
-  };
-
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!inputText.trim() || !activeAgentId) return;
@@ -332,8 +282,7 @@ const App = () => {
     });
 
     setIsTyping(true);
-    // Pass the googleAccessToken to the brain
-    const responseText = await generateAgentResponse(currentAgent.systemPrompt, messages, userMsgText, googleAccessToken);
+    const responseText = await generateAgentResponse(currentAgent.systemPrompt, messages, userMsgText);
     setIsTyping(false);
 
     await sendMessageToFirestore(shopId, {
@@ -389,12 +338,7 @@ const App = () => {
                 <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500"><DynamicIcon name={activeAgent.icon} size={18} /></div>
                 <div>
                   <h2 className="font-bold text-gray-100">{activeAgent.name}</h2>
-                  <div className="flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${googleAccessToken ? 'bg-blue-500' : 'bg-green-500'} animate-pulse`}></span>
-                    <span className={`text-xs ${googleAccessToken ? 'text-blue-500' : 'text-green-500'} font-mono`}>
-                      {googleAccessToken ? 'LINKED: GOOGLE' : 'ONLINE'}
-                    </span>
-                  </div>
+                  <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span><span className="text-xs text-green-500 font-mono">ONLINE</span></div>
                 </div>
               </div>
             )}
@@ -430,14 +374,7 @@ const App = () => {
         </div>
       </main>
 
-      <SettingsModal 
-        isOpen={settingsOpen} 
-        onClose={() => setSettingsOpen(false)} 
-        agents={agents} 
-        onUpdateAgentPrompt={handleUpdateAgentPrompt} 
-        onConnectGoogle={handleConnectGoogle}
-        googleConnected={!!googleAccessToken}
-      />
+      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} agents={agents} onUpdateAgentPrompt={handleUpdateAgentPrompt} />
     </div>
   );
 };
