@@ -21,6 +21,7 @@ const firebaseConfig = {
 };
 
 // [B] AI BRAIN CONFIG (Gemini)
+// Hardcoded for stability
 const GEMINI_API_KEY = "AIzaSyCI5OoLiqoW4l4OZ78LjeTC28ZeOxBR99c";
 
 // Initialize Firebase
@@ -41,11 +42,41 @@ enum AppState {
 
 // --- 3. SERVICES (Merged from ./services) ---
 const DEFAULT_AGENTS = [
-  { id: 'shop-admin', name: 'Shop Manager', role: 'Operations', icon: 'Briefcase', systemPrompt: "You are the Shop Manager. You know shop minimums ($100), deposit policies (non-refundable), and consent forms." },
-  { id: 'gmail-assistant', name: 'Inbox Zero', role: 'Email Asst', icon: 'Mail', systemPrompt: "You are an Executive Assistant. When I paste an email below, categorize it (Booking, Spam, Question) and draft a polite, professional reply based on standard tattoo shop etiquette." },
-  { id: 'social-hype', name: 'Hype Man', role: 'Social Media', icon: 'Sparkles', systemPrompt: "You are a Social Media expert for Tattoo Artists. Create captions, reel ideas, and hashtag sets." },
-  { id: 'seo-wizard', name: 'SEO Wizard', role: 'Marketing', icon: 'PenTool', systemPrompt: "You are an SEO Specialist. Write blog posts and Google My Business replies to help us rank locally." },
-  { id: 'lead-hunter', name: 'The Scout', role: 'Leads', icon: 'Search', systemPrompt: "You are a Business Scout. Find conventions, partnerships, and client outreach opportunities." }
+  { 
+    id: 'shop-admin', 
+    name: 'Shop Manager', 
+    role: 'Operations', 
+    icon: 'Briefcase', 
+    systemPrompt: "You are the Shop Manager of a high-end tattoo studio. You are professional, strict about deposits, knowledgeable about aftercare (Saniderm), and protective of the artists' time. DEPOSITS ARE NON-REFUNDABLE." 
+  },
+  { 
+    id: 'gmail-assistant', 
+    name: 'Inbox Assistant', 
+    role: 'Booking & Inquiries', 
+    icon: 'Mail', 
+    systemPrompt: "You are a Booking Assistant. You CANNOT access the user's actual Gmail account. You rely on the user PASTING email content into this chat. Your job is to: 1. Categorize the pasted email (Booking, Spam, Question). 2. Draft a polite response. If the user asks you to 'check email', politely remind them to paste the text here." 
+  },
+  { 
+    id: 'social-hype', 
+    name: 'Hype Man', 
+    role: 'Social Media & Trends', 
+    icon: 'Sparkles', 
+    systemPrompt: "You are the shop Hype Man. You generate fire captions for Instagram and TikTok. You use trending hashtags (#tattoolife #inked). You suggest content ideas like 'ASMR peel reveals' or 'client reaction' videos." 
+  },
+  { 
+    id: 'seo-wizard', 
+    name: 'SEO Wizard', 
+    role: 'Local Search Ranking', 
+    icon: 'Globe', 
+    systemPrompt: "You are an SEO wizard specialized in tattoo shops. Write blog outlines, Google My Business replies, and website copy that ranks for keywords like 'Best Tattoo Artist [City]' and 'Fine Line Tattoo'." 
+  },
+  { 
+    id: 'lead-hunter', 
+    name: 'Lead Scout', 
+    role: 'Outreach & Partnerships', 
+    icon: 'Telescope', 
+    systemPrompt: "You are the Lead Scout. You brainstorm brand collaborations, guest spot opportunities, and convention strategies to get more eyes on the shop." 
+  }
 ];
 
 const initializeShop = async (shopId) => {
@@ -77,7 +108,6 @@ const subscribeToMessages = (shopId, agentId, callback) => {
   const q = query(collection(db, 'shops', shopId, 'messages'), orderBy('timestamp', 'asc'));
   return onSnapshot(q, (snapshot) => {
     const allMsgs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    // Filter client-side to keep it simple
     callback(allMsgs.filter(m => m.agentId === agentId));
   });
 };
@@ -93,13 +123,14 @@ const updateAgentPrompt = async (shopId, agents) => {
 };
 
 const generateAgentResponse = async (systemPrompt, history, userMsg) => {
-  // Use Hardcoded Key OR Local Storage
-  const apiKey = GEMINI_API_KEY || localStorage.getItem('nexus_gemini_key');
+  const apiKey = GEMINI_API_KEY; 
   
-  if (!apiKey) return "Please set your Gemini API Key in System Config (or in the code).";
-  
+  // FIX: Changed model from 'gemini-1.5-flash' to 'gemini-1.5-flash-001' for stability
+  // If this still fails, try 'gemini-pro'
+  const MODEL_NAME = "gemini-1.5-flash-001";
+
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -107,7 +138,16 @@ const generateAgentResponse = async (systemPrompt, history, userMsg) => {
       })
     });
     const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "Error from AI.";
+    
+    if (data.error) {
+      return `System Error: ${data.error.message}`;
+    }
+    
+    if (!data.candidates || data.candidates.length === 0) {
+      return "I'm having trouble thinking right now. (Safety Filter or Empty Response)";
+    }
+
+    return data.candidates[0].content.parts[0].text;
   } catch (e) {
     return "Network Error: " + e.message;
   }
@@ -142,13 +182,7 @@ const LoginScreen = ({ onLogin }) => {
 
 const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
   if (!isOpen) return null;
-  const [apiKey, setApiKey] = useState(localStorage.getItem('nexus_gemini_key') || GEMINI_API_KEY);
   const [editingAgent, setEditingAgent] = useState(null);
-
-  const saveKey = () => {
-    localStorage.setItem('nexus_gemini_key', apiKey);
-    alert('API Key Saved');
-  };
 
   return (
     <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
@@ -158,18 +192,12 @@ const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
           <button onClick={onClose}><LucideIcons.X className="text-slate-400" /></button>
         </div>
 
-        <div className="mb-8">
-          <label className="text-xs font-bold text-slate-500 uppercase">Gemini API Key</label>
-          <div className="flex gap-2 mt-2">
-            <input 
-              type="password" 
-              value={apiKey} 
-              onChange={e => setApiKey(e.target.value)} 
-              placeholder={GEMINI_API_KEY ? "Key Hardcoded in Code" : "Paste Key Here"}
-              className="flex-1 bg-black border border-slate-700 rounded p-2 text-white" 
-            />
-            <button onClick={saveKey} className="bg-amber-600 text-white px-4 rounded font-bold">Save</button>
+        <div className="mb-8 bg-slate-950 p-4 rounded border border-slate-800">
+          <div className="flex items-center gap-2 text-green-500 mb-2">
+            <LucideIcons.CheckCircle size={16} />
+            <span className="text-sm font-bold">Systems Online</span>
           </div>
+          <p className="text-xs text-slate-500">API Keys are hardcoded and active.</p>
         </div>
 
         <div>
@@ -209,7 +237,7 @@ const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
   );
 };
 
-// --- 5. MAIN APP COMPONENT (The logic you pasted) ---
+// --- 5. MAIN APP COMPONENT ---
 const App = () => {
   const [appState, setAppState] = useState(AppState.LOGIN);
   const [shopId, setShopId] = useState('');
