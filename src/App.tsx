@@ -21,7 +21,14 @@ const firebaseConfig = {
 };
 
 // [B] AI BRAIN CONFIG (Gemini)
-const GEMINI_API_KEY = "AIzaSyCI5OoLiqoW4l4OZ78LjeTC28ZeOxBR99c";
+// TODO: Paste the key from aistudio.google.com here
+const GEMINI_API_KEY = "AIzaSyDJXoipDEceJJimaJv0uzmWcAuGY6_XY7o";
+
+// [C] GOOGLE CLIENT ID (For Gmail Login)
+const GOOGLE_CLIENT_ID = "1023316367996-vvh5ccn5u0togfo5uh4qn679j8uqqlt6.apps.googleusercontent.com";
+
+// [D] BACKEND CONFIG
+const CLOUD_FUNCTION_URL = "https://console.firebase.google.com/project/hallowed-hand-console/overview";
 
 // Initialize Firebase
 let db;
@@ -39,7 +46,7 @@ enum AppState {
   MAIN = 'MAIN'
 }
 
-// --- 3. SERVICES (Merged from ./services) ---
+// --- 3. SERVICES ---
 const DEFAULT_AGENTS = [
   { 
     id: 'shop-admin', 
@@ -121,22 +128,86 @@ const updateAgentPrompt = async (shopId, agents) => {
   await setDoc(doc(db, 'shops', shopId), { agents }, { merge: true });
 };
 
-const generateAgentResponse = async (systemPrompt, history, userMsg) => {
-  const apiKey = GEMINI_API_KEY; 
-  const MODEL_NAME = "gemini-1.5-flash"; 
+// --- BACKEND & GEMINI LOGIC ---
 
+const handleGoogleLogin = () => {
+  const client_id = GOOGLE_CLIENT_ID; 
+  const redirect_uri = window.location.origin; 
+  const scope = "https://www.googleapis.com/auth/gmail.readonly";
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${client_id}&redirect_uri=${redirect_uri}&response_type=token&scope=${scope}`;
+  
+  window.location.href = authUrl;
+};
+
+const checkEmailsFromBackend = async (token) => {
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`, {
+    const res = await fetch(CLOUD_FUNCTION_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: `${systemPrompt}\n\nUser: ${userMsg}` }] }]
-      })
+      body: JSON.stringify({ token })
     });
-    const data = await res.json();
     
-    if (data.error) return `System Error: ${data.error.message}`;
-    if (!data.candidates || data.candidates.length === 0) return "I'm thinking... (Safety block or empty response)";
+    if (!res.ok) {
+      const errData = await res.json();
+      throw new Error(errData.error || "Server Error");
+    }
+
+    const data = await res.json();
+    return data.emails || "No unread emails found.";
+  } catch (e) {
+    return "Error fetching emails: " + e.message;
+  }
+};
+
+const fetchGeminiResponse = async (apiKey, model, payload) => {
+  console.log(`Attempting AI request to model: ${model}`);
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return response.json();
+};
+
+const generateAgentResponse = async (systemPrompt, history, userMsg, googleToken) => {
+  const apiKey = GEMINI_API_KEY.trim();
+  
+  if (apiKey.includes("PASTE_YOUR")) {
+     return "⚠️ SYSTEM CONFIG ERROR: You still need to paste your new API Key into src/App.tsx";
+  }
+
+  let context = "";
+
+  if ((userMsg.toLowerCase().includes("email") || userMsg.toLowerCase().includes("inbox")) && googleToken) {
+    context = await checkEmailsFromBackend(googleToken);
+    context = `\n\n[SYSTEM DATA - REAL EMAILS FETCHED]:\n${context}\n\n`;
+  }
+
+  const finalPrompt = `${systemPrompt}${context}User Request: ${userMsg}`;
+  
+  const payload = {
+    contents: [{ role: "user", parts: [{ text: finalPrompt }] }]
+  };
+
+  try {
+    // Using standard flash model
+    let data = await fetchGeminiResponse(apiKey, 'gemini-1.5-flash', payload);
+
+    if (data.error) {
+      // Auto-fallback if Flash fails
+      console.warn("Flash failed, trying Pro...", data.error);
+      data = await fetchGeminiResponse(apiKey, 'gemini-pro', payload);
+    }
+
+    if (data.error) {
+      let advice = "";
+      if (data.error.message.includes("not found") || data.error.message.includes("404")) {
+         advice = "⚠️ KEY ISSUE: This key does not have access to Gemini. Please use a key from aistudio.google.com.";
+      }
+      return `System Error: ${advice} \nDetails: ${data.error.message}`;
+    }
+    
+    if (!data.candidates || data.candidates.length === 0) return "I'm thinking... (Empty Response)";
 
     return data.candidates[0].content.parts[0].text;
   } catch (e) {
@@ -144,7 +215,7 @@ const generateAgentResponse = async (systemPrompt, history, userMsg) => {
   }
 };
 
-// --- 4. COMPONENTS (Merged from ./components) ---
+// --- COMPONENTS ---
 const DynamicIcon = ({ name, className, size = 20 }) => {
   const Icon = LucideIcons[name] || LucideIcons.Bot;
   return <Icon size={size} className={className} />;
@@ -171,7 +242,7 @@ const LoginScreen = ({ onLogin }) => {
   );
 };
 
-const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
+const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt, onGoogleLogin, googleToken }) => {
   if (!isOpen) return null;
   const [editingAgent, setEditingAgent] = useState(null);
 
@@ -185,11 +256,20 @@ const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
         <h2 className="text-xl font-bold text-white mb-6">System Configuration</h2>
 
         <div className="mb-8 bg-slate-950 p-4 rounded border border-slate-800">
-          <div className="flex items-center gap-2 text-green-500 mb-2">
+          <div className="flex items-center gap-2 text-green-500 mb-4">
             <LucideIcons.CheckCircle size={16} />
-            <span className="text-sm font-bold">Systems Online</span>
+            <span className="text-sm font-bold">Keys Loaded</span>
           </div>
-          <p className="text-xs text-slate-500">API Keys are hardcoded and active.</p>
+          
+          <div className="flex justify-between items-center">
+             <div>
+               <div className="text-white font-bold">Gmail Connection</div>
+               <div className="text-xs text-slate-500">{googleToken ? 'Active' : 'Disconnected'}</div>
+             </div>
+             <button onClick={onGoogleLogin} className={`px-4 py-2 rounded text-sm font-bold ${googleToken ? 'bg-green-600 text-white' : 'bg-white text-black'}`}>
+               {googleToken ? 'Connected' : 'Connect Google'}
+             </button>
+           </div>
         </div>
 
         <div>
@@ -229,19 +309,34 @@ const SettingsModal = ({ isOpen, onClose, agents, onUpdateAgentPrompt }) => {
   );
 };
 
-// --- 5. MAIN APP COMPONENT ---
+// --- MAIN APP ---
 const App = () => {
   const [appState, setAppState] = useState(AppState.LOGIN);
   const [shopId, setShopId] = useState('');
   const [agents, setAgents] = useState([]);
   const [activeAgentId, setActiveAgentId] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [googleToken, setGoogleToken] = useState(null);
   
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef(null);
+
+  // Handle Google Redirect (Parse Token from URL)
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash && hash.includes('access_token')) {
+      const token = new URLSearchParams(hash.substring(1)).get('access_token');
+      if (token) {
+        setGoogleToken(token);
+        window.history.replaceState(null, '', ' '); // Clean URL
+        const storedShop = localStorage.getItem('inkcommand_shopId');
+        if (storedShop) handleLogin(storedShop);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const storedShopId = localStorage.getItem('inkcommand_shopId');
@@ -250,9 +345,7 @@ const App = () => {
     }
   }, []);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), [messages, isTyping]);
 
   useEffect(() => {
     if (appState === AppState.MAIN && shopId) {
@@ -302,7 +395,9 @@ const App = () => {
     });
 
     setIsTyping(true);
-    const responseText = await generateAgentResponse(currentAgent.systemPrompt, messages, userMsgText);
+    
+    const responseText = await generateAgentResponse(currentAgent.systemPrompt, messages, userMsgText, googleToken);
+    
     setIsTyping(false);
 
     await sendMessageToFirestore(shopId, {
@@ -358,7 +453,12 @@ const App = () => {
                 <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-500"><DynamicIcon name={activeAgent.icon} size={18} /></div>
                 <div>
                   <h2 className="font-bold text-gray-100">{activeAgent.name}</h2>
-                  <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span><span className="text-xs text-green-500 font-mono">ONLINE</span></div>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${googleToken ? 'bg-green-500' : 'bg-slate-500'} animate-pulse`}></span>
+                    <span className={`text-xs ${googleToken ? 'text-green-500' : 'text-slate-500'} font-mono`}>
+                      {googleToken ? 'GMAIL ACTIVE' : 'OFFLINE'}
+                    </span>
+                  </div>
                 </div>
               </div>
             )}
@@ -394,7 +494,14 @@ const App = () => {
         </div>
       </main>
 
-      <SettingsModal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} agents={agents} onUpdateAgentPrompt={handleUpdateAgentPrompt} />
+      <SettingsModal 
+        isOpen={settingsOpen} 
+        onClose={() => setSettingsOpen(false)} 
+        agents={agents} 
+        onUpdateAgentPrompt={handleUpdateAgentPrompt} 
+        onGoogleLogin={handleGoogleLogin}
+        googleToken={googleToken}
+      />
     </div>
   );
 };
